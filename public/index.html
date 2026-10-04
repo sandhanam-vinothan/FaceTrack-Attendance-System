@@ -41,7 +41,7 @@ function login(){$('#app').innerHTML=`<div class="g box"><h1>🎓 Face<b>Attend<
 async function doLogin(f){try{const r=await api('POST','login',fd(f));T=r.token;localStorage.setItem('t',T);boot()}catch(x){fail(x)}return false}
 function pwForm(){$('#app').innerHTML=`<div class="g box"><h2>Set a new password</h2><p class="mu">You must change your temporary password before continuing.</p><form onsubmit="doPw(this);return false"><input name="old" type="password" placeholder="Current password" required><input name="new" type="password" placeholder="New password (8+ chars, letter and number)" required minlength="8"><button>Save password</button></form><p><a onclick="logout()">Log out</a></p></div>`}
 async function doPw(f){try{await api('POST','password',fd(f));toast('Password saved');boot()}catch(x){fail(x)}return false}
-const TABS={admin:['Manage'],teacher:['Classes','Timetable','Attendance'],student:['My attendance']};
+const TABS={admin:['Manage'],teacher:['Classes','Timetable','Attendance','Classroom Scanner'],student:['My attendance']};
 function shell(){if(!TABS[U.role].includes(TAB))TAB=TABS[U.role][0];
  $('#app').innerHTML=`<header class="g"><b>🎓 Face<span>Attend</span></b><span class="mu">${e(U.name)} (${U.role})</span><button class="s" onclick="logout()">Log out</button></header><nav>${TABS[U.role].map(t=>`<button class="s ${t==TAB?'on':''}" onclick="TAB='${t}';shell()">${t}</button>`).join('')}</nav><main id="main">Loading…</main>`;VIEWS[TAB]().catch(fail)}
 /* ---- Admin ---- */
@@ -72,6 +72,26 @@ async function openS(id){try{const r=await api('GET','t/session/'+id),s=r.sessio
 async function mark(sid,stu,st,cur){if(cur===st)return;let reason;if(cur){reason=prompt('Reason for correcting '+cur+' → '+st+'?');if(!reason)return}
  try{await api('POST','t/mark',{sessionId:sid,studentId:stu,status:st,reason});openS(sid)}catch(x){fail(x)}}
 async function closeS(id){if(!confirm('Close this session? Attendance can no longer be changed.'))return;try{await api('POST','t/close/'+id);await VIEWS.Attendance();openS(id)}catch(x){fail(x)}}
+/* ---- Classroom wall scanner ---- */
+VIEWS['Classroom Scanner']=async()=>{const ss=await api('GET','t/sessions'),open=ss.filter(x=>!x.closed);
+ $('#main').innerHTML=`<div class="g"><h3>📷 Classroom Wall Scanner</h3><p class="mu">Mount this device near the classroom entrance. Start the correct attendance session first, then launch the scanner. Recognized enrolled students are marked PRESENT automatically.</p>${open.length?tbl(['Class','Date','Period','Status',''],open.map(x=>[e(x.className),x.date,x.period,'Open',`<button onclick="wallScan(${x.id})">Launch scanner</button>`])):`<p class="mu">No open attendance session. Create one from Attendance first.</p>`}</div>`};
+async function wallScan(sid){try{toast('Loading camera and face models…',8000);await loadFace();const r=await api('GET','t/session/'+sid),F=await api('GET','t/faces/'+r.session.cid);
+ if(!F.length)return toast('No faces enrolled for this class yet. Enrol students from Attendance first.',6000);
+ const stt={},nm={},done=[];r.roster.forEach(x=>{stt[x.id]=x.st;nm[x.id]=x.name});
+ const M=new faceapi.FaceMatcher(F.map(f=>new faceapi.LabeledFaceDescriptors(String(f.id),f.d.map(d=>new Float32Array(d)))),.5);
+ const c=await cam('CLASSROOM SCANNER — '+e(r.session.className),`<div style="text-align:center"><div style="font-size:18px;font-weight:700">Period ${r.session.period}</div><div id="clock" class="mu" style="font-size:16px;margin:4px 0 12px"></div><div id="wallmsg" style="font-size:26px;font-weight:800;color:var(--a);min-height:42px">Show face to camera</div><p id="wallsub" class="mu">Looking for enrolled students…</p><div class="tiles"><div><b id="wallcount">${Object.values(stt).filter(x=>x==='PRESENT').length}</b>Present</div><div><b>${r.roster.length}</b>Students</div></div><div class="row"><button class="s" id="cx">Stop scanner</button></div></div>`);
+ const clock=()=>{const q=c.q('#clock');if(q)q.textContent=new Date().toLocaleString()};clock();const ci=setInterval(clock,1000);const oldStop=c.stop;c.stop=()=>{clearInterval(ci);oldStop()};
+ c.q('#cx').onclick=()=>{c.stop();VIEWS['Classroom Scanner']()};let seen={},busy=0,last='';
+ c.t=setInterval(async()=>{if(busy||c.dead)return;busy=1;try{const ds=await faceapi.detectAllFaces(c.v,FO()).withFaceLandmarks().withFaceDescriptors(),cur=new Set();
+  if(!ds.length){c.q('#wallsub').textContent='Waiting for a face…'}
+  for(const d of ds){const m=M.findBestMatch(d.descriptor);if(m.label==='unknown')continue;const id=+m.label;if(!id)continue;cur.add(id);seen[id]=(seen[id]||0)+1;if(seen[id]<2)continue;
+   if(stt[id]){if(last!==id){c.q('#wallmsg').textContent='Already recorded — '+nm[id];c.q('#wallsub').textContent=stt[id];last=id}continue}
+   await api('POST','t/mark',{sessionId:sid,studentId:id,status:'PRESENT'});stt[id]='PRESENT';done.push(nm[id]);last=id;c.q('#wallmsg').textContent='✓ '+nm[id];c.q('#wallsub').textContent='ATTENDANCE RECORDED';c.q('#wallcount').textContent=Object.values(stt).filter(x=>x==='PRESENT').length;
+  }
+  for(const k in seen)if(!cur.has(+k))delete seen[k]
+ }catch(x){if(x&&x.error){fail(x);c.stop();return}}busy=0},800)
+ }catch(x){ferr(x)}}
+
 /* ---- Face scan ---- */
 const FV='https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12',FO=()=>new faceapi.TinyFaceDetectorOptions({inputSize:320,scoreThreshold:.5});let FL;
 const wait=ms=>new Promise(z=>setTimeout(z,ms));
