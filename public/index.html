@@ -1,0 +1,104 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#0a1c2b"><title>FaceAttend – Student Attendance</title>
+<style>
+:root{--a:#5eead4;--t:#e8f1f8;--m:#8fa6b8}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;color:var(--t);background:radial-gradient(800px 500px at 0 -10%,#14607a66,transparent),radial-gradient(700px 500px at 100% 0,#5b3a9a55,transparent),#07101a;background-attachment:fixed}
+#app{max-width:980px;margin:0 auto;padding:12px 14px 40px}
+.g{background:rgba(255,255,255,.07);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.14);border-radius:18px;padding:16px;margin:12px 0}
+header.g{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}header b span,h1 b{color:var(--a)}
+h1,h2,h3{margin:0 0 10px}h3{font-size:16px}.mu{color:var(--m);font-size:13px}
+input,select,button{font:inherit;color:var(--t);border-radius:12px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);padding:9px 12px;min-width:0}
+select option{color:#000}input:focus,select:focus,button:focus-visible{outline:2px solid var(--a);outline-offset:1px}
+button{cursor:pointer;background:linear-gradient(135deg,#14b8a6,#0ea5e9);border:0;font-weight:600;color:#04121a}
+button.s{background:rgba(255,255,255,.1);color:var(--t);border:1px solid rgba(255,255,255,.18)}button.s.on{background:var(--a);color:#04121a}
+button:disabled{opacity:.5;cursor:not-allowed}
+.box{max-width:380px;margin:12vh auto}.box form{display:grid;gap:10px}
+.row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1 1 130px}label.mu{display:grid;gap:2px}
+nav{display:flex;gap:8px;flex-wrap:wrap}
+.w{overflow-x:auto}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px 6px;border-bottom:1px solid rgba(255,255,255,.1);vertical-align:middle}th{color:var(--m);font-weight:500;font-size:13px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;margin-bottom:10px}.tiles div{background:rgba(255,255,255,.07);border-radius:14px;padding:10px;font-size:12px;color:var(--m)}.tiles b{display:block;font-size:22px;color:var(--t)}
+.p{border-radius:999px;padding:3px 10px;font-size:12px;font-weight:600;border:1px solid transparent;background:rgba(255,255,255,.08);color:var(--t)}
+button.p{margin:2px;opacity:.75}button.p.on{opacity:1;border-color:#fff}
+.PRESENT{background:#16a34a;color:#fff}.ABSENT{background:#dc2626;color:#fff}.OD{background:#2563eb;color:#fff}.LATE{background:#d97706;color:#fff}
+#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);max-width:92vw;background:#0b2233;border:1px solid var(--a);border-radius:14px;padding:12px 16px;z-index:20}
+#md:not(:empty){position:fixed;inset:0;display:grid;place-items:center;background:#000a;z-index:10;padding:14px}.mc{max-width:560px;width:100%;max-height:90vh;overflow:auto;background:#0d1d2b}
+a{color:var(--a);cursor:pointer}
+</style></head><body><div id="app"></div><div id="md"></div><div id="toast" hidden></div>
+<script>
+const $=q=>document.querySelector(q),e=s=>String(s??'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';');
+const DAYS=['Mon','Tue','Wed','Thu','Fri','Sat'],ST=['PRESENT','ABSENT','OD','LATE'],VIEWS={};
+let T=localStorage.getItem('t'),U=null,TAB='',D={};
+const toast=(m,ms=4000)=>{const t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toast.i);toast.i=setTimeout(()=>t.hidden=true,ms)};
+async function api(m,u,b){const r=await fetch('/api/'+u,{method:m,headers:{'content-type':'application/json',authorization:'Bearer '+(T||'')},body:b?JSON.stringify(b):undefined}),j=await r.json().catch(()=>({}));if(!r.ok){if(r.status===401&&T&&u!=='login')logout();throw j}return j}
+const fail=x=>toast('⚠️ '+(x&&x.error||'Network error. Try again.'));
+function logout(){T=null;U=null;localStorage.removeItem('t');boot()}
+const fd=f=>Object.fromEntries(new FormData(f)),nm=(a,id)=>(a.find(x=>x.id==id)||{}).name||'-';
+const opts=a=>a.map(x=>`<option value="${x.id}">${e(x.name)}</option>`).join('');
+const tbl=(h,r)=>`<div class="w"><table><tr>${h.map(x=>`<th>${x}</th>`).join('')}</tr>${r.map(x=>`<tr>${x.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')||`<tr><td colspan="${h.length}" class="mu">Nothing here yet.</td></tr>`}</table></div>`;
+const modal=h=>{$('#md').innerHTML=`<div class="g mc">${h}<button onclick="$('#md').innerHTML=''">Close</button></div>`};
+const rep=r=>`<div class="tiles"><div><b>${r.pct}%</b>Attendance</div><div><b>${r.present}</b>Present</div><div><b>${r.absent}</b>Absent</div><div><b>${r.od}</b>OD</div><div><b>${r.late}</b>Late</div></div><p class="mu">Present, Late and OD count as attended.</p>`+tbl(['Date','Period','Status'],r.history.map(h=>[h.date,h.period,`<span class="p ${h.st}">${h.st}</span>`]));
+async function boot(){if(!T)return login();try{U=(await api('GET','me')).user}catch{return login()}U.must?pwForm():shell()}
+function login(){$('#app').innerHTML=`<div class="g box"><h1>🎓 Face<b>Attend</b></h1><p class="mu">Student attendance system</p><form onsubmit="doLogin(this);return false"><input name="email" type="email" placeholder="Email" required autocomplete="username"><input name="password" type="password" placeholder="Password" required autocomplete="current-password"><button>Sign in</button></form><p class="mu">Accounts are created by your administrator.</p></div>`}
+async function doLogin(f){try{const r=await api('POST','login',fd(f));T=r.token;localStorage.setItem('t',T);boot()}catch(x){fail(x)}return false}
+function pwForm(){$('#app').innerHTML=`<div class="g box"><h2>Set a new password</h2><p class="mu">You must change your temporary password before continuing.</p><form onsubmit="doPw(this);return false"><input name="old" type="password" placeholder="Current password" required><input name="new" type="password" placeholder="New password (8+ chars, letter and number)" required minlength="8"><button>Save password</button></form><p><a onclick="logout()">Log out</a></p></div>`}
+async function doPw(f){try{await api('POST','password',fd(f));toast('Password saved');boot()}catch(x){fail(x)}return false}
+const TABS={admin:['Manage'],teacher:['Classes','Timetable','Attendance'],student:['My attendance']};
+function shell(){if(!TABS[U.role].includes(TAB))TAB=TABS[U.role][0];
+ $('#app').innerHTML=`<header class="g"><b>🎓 Face<span>Attend</span></b><span class="mu">${e(U.name)} (${U.role})</span><button class="s" onclick="logout()">Log out</button></header><nav>${TABS[U.role].map(t=>`<button class="s ${t==TAB?'on':''}" onclick="TAB='${t}';shell()">${t}</button>`).join('')}</nav><main id="main">Loading…</main>`;VIEWS[TAB]().catch(fail)}
+/* ---- Admin ---- */
+const fld=([n,l,t])=>t==='number'?`<input name="${n}" type="number" min="1" max="12" placeholder="${l}" required>`:t==='time'?`<label class="mu">${l}<input name="${n}" type="time" required></label>`:t==='days'?`<select name="${n}">${DAYS.map((d,i)=>`<option value="${i+1}">${d}</option>`).join('')}</select>`:t?`<select name="${n}" required><option value="">${l}…</option>${opts(D[t])}</select>`:`<input name="${n}" placeholder="${l}" required>`;
+const FORMS=[['dept','department',[['name','Name']]],['class','class',[['name','Class name, e.g. Information Technology – A'],['deptId','Department','depts'],['semester','Semester','number']]],['teacher','teacher',[['name','Name'],['email','Email']]],['student','student',[['name','Name'],['email','Email'],['collegeId','College ID'],['regNo','Registration no.'],['classId','Class','classes']]],['assign','teacher–class assignment',[['teacherId','Teacher','teachers'],['classId','Class','classes']]],['tt','timetable entry',[['classId','Class','classes'],['teacherId','Teacher','teachers'],['subject','Subject'],['day','Day','days'],['period','Period','number'],['start','Start','time'],['end','End','time']]]];
+VIEWS.Manage=async()=>{D=await api('GET','admin/data');
+ $('#main').innerHTML=FORMS.map(([k,t,fs])=>`<form class="g" onsubmit="add(this,'${k}');return false"><h3>Add ${t}</h3><div class="row">${fs.map(fld).join('')}<button>Add</button></div></form>`).join('')+
+ `<div class="g"><h3>Classes</h3>${tbl(['Class','Department','Sem'],D.classes.map(c=>[e(c.name),e(nm(D.depts,c.deptId)),c.semester]))}</div>
+ <div class="g"><h3>Teachers</h3>${tbl(['Name','Email','Assigned classes'],D.teachers.map(t=>[e(t.name),e(t.email),e(D.assigns.filter(a=>a.tid==t.id).map(a=>nm(D.classes,a.cid)).join(', ')||'-')]))}</div>
+ <div class="g"><h3>Students</h3>${tbl(['Name','College ID','Reg. no.','Class'],D.students.map(s=>[e(s.name),e(s.collegeId),e(s.regNo),e(nm(D.classes,s.classId))]))}</div>
+ <div class="g"><h3>Timetable</h3>${tbl(['Class','Teacher','Subject','Day','Period','Time'],D.tt.map(t=>[e(nm(D.classes,t.cid)),e(nm(D.teachers,t.tid)),e(t.subject),DAYS[t.day-1],t.period,t.start+'–'+t.end]))}</div>`};
+async function add(f,k){try{const r=await api('POST','admin/'+k,fd(f));toast(r.temp?`Account created. Temporary password: ${r.temp} (shown once – share it securely)`:'Added ✓',r.temp?30000:3000);VIEWS.Manage()}catch(x){fail(x)}return false}
+/* ---- Teacher ---- */
+VIEWS.Classes=async()=>{const c=await api('GET','t/classes');$('#main').innerHTML=`<div class="g"><h3>My classes</h3>${tbl(['Class','Sem',''],c.map(x=>[e(x.name),x.semester,`<button class="s" onclick="ros(${x.id})">Roster</button>`]))}</div><div id="ro"></div>`};
+async function ros(id){try{const r=await api('GET','t/roster/'+id);$('#ro').innerHTML=`<div class="g"><h3>Student roster</h3>${tbl(['Name','College ID','Reg. no.',''],r.map(s=>[e(s.name),e(s.collegeId),e(s.regNo),`<button class="s" onclick="srep(${s.id})">Report</button>`]))}</div>`}catch(x){fail(x)}}
+async function srep(id){try{const r=await api('GET','t/student/'+id);modal(`<h3>${e(r.name)}</h3>`+rep(r))}catch(x){fail(x)}}
+VIEWS.Timetable=async()=>{const t=await api('GET','t/tt');$('#main').innerHTML=`<div class="g"><h3>My timetable</h3>${tbl(['Day','Period','Time','Class','Subject'],t.map(x=>[DAYS[x.day-1],x.period,x.start+'–'+x.end,e(x.className),e(x.subject)]))}</div>`};
+const today=()=>new Date(Date.now()-new Date().getTimezoneOffset()*6e4).toISOString().slice(0,10);
+VIEWS.Attendance=async()=>{const[c,s]=await Promise.all([api('GET','t/classes'),api('GET','t/sessions')]);
+ $('#main').innerHTML=`<form class="g" onsubmit="mkS(this);return false"><h3>New attendance session</h3><div class="row"><select name="classId" required><option value="">Class…</option>${opts(c)}</select><input name="date" type="date" value="${today()}" required><input name="period" type="number" min="1" max="12" placeholder="Period" required><button>Create session</button></div></form><div class="g"><h3>My sessions</h3>${tbl(['Class','Date','Period','Status',''],s.map(x=>[e(x.className),x.date,x.period,x.closed?'Closed':'Open',`<button class="s" onclick="openS(${x.id})">Open</button>`]))}</div><div id="ss"></div>`};
+async function mkS(f){try{const r=await api('POST','t/session',fd(f));await VIEWS.Attendance();openS(r.id)}catch(x){fail(x)}return false}
+async function openS(id){try{const r=await api('GET','t/session/'+id),s=r.session,m=r.summary;window.RO=r.roster;
+ $('#ss').innerHTML=`<div class="g"><h3>${e(s.className)} – ${s.date}, period ${s.period} ${s.closed?'(closed)':''}</h3><div class="tiles"><div><b>${m.total}</b>Students</div><div><b>${m.present}</b>Present</div><div><b>${m.absent}</b>Absent</div><div><b>${m.od}</b>OD</div><div><b>${m.late}</b>Late</div><div><b>${m.unmarked}</b>Unmarked</div><div><b>${m.pct}%</b>Attendance</div></div>`+
+ tbl(['Student','College ID','Status','Face'],r.roster.map(x=>[`<a onclick="srep(${x.id})">${e(x.name)}</a>`,e(x.collegeId),ST.map(k=>`<button class="p ${k} ${x.st===k?'on':''}" ${s.closed?'disabled':''} onclick="mark(${id},${x.id},'${k}','${x.st||''}')">${k}</button>`).join(''),(x.face?'✅ ':'')+`<a onclick="enrol(${id},${x.id})">${x.face?'Re-enrol':'Enrol'}</a>`]))+
+ `<div class="row" style="margin-top:10px">${s.closed?'':`<button onclick="closeS(${id})">Close session</button>`}${s.closed?'':`<button class="s" onclick="scan(${id})">📷 Face scan</button>`}</div></div>`+
+ (r.fixes.length?`<div class="g"><h3>Correction history</h3>${tbl(['Student','Change','Reason','By','When'],r.fixes.map(x=>[e(x.student),`${x.prev} → ${x.next}`,e(x.reason),e(x.by),new Date(x.at).toLocaleString()]))}</div>`:'');
+ $('#ss').scrollIntoView({behavior:'smooth'})}catch(x){fail(x)}}
+async function mark(sid,stu,st,cur){if(cur===st)return;let reason;if(cur){reason=prompt('Reason for correcting '+cur+' → '+st+'?');if(!reason)return}
+ try{await api('POST','t/mark',{sessionId:sid,studentId:stu,status:st,reason});openS(sid)}catch(x){fail(x)}}
+async function closeS(id){if(!confirm('Close this session? Attendance can no longer be changed.'))return;try{await api('POST','t/close/'+id);await VIEWS.Attendance();openS(id)}catch(x){fail(x)}}
+/* ---- Face scan ---- */
+const FV='https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12',FO=()=>new faceapi.TinyFaceDetectorOptions({inputSize:320,scoreThreshold:.5});let FL;
+const wait=ms=>new Promise(z=>setTimeout(z,ms));
+const ferr=x=>fail(x&&x.error?x:{error:x&&x.name==='NotAllowedError'?'Camera permission was denied.':(x&&x.message)||'Camera error.'});
+const loadFace=()=>FL||(FL=(async()=>{if(!window.faceapi)await new Promise((ok,no)=>{const s=document.createElement('script');s.src=FV+'/dist/face-api.js';s.onload=ok;s.onerror=()=>no({error:'Could not load the face library. Check your internet connection.'});document.head.appendChild(s)});faceapi.tf&&await faceapi.tf.ready();await Promise.all([faceapi.nets.tinyFaceDetector,faceapi.nets.faceLandmark68Net,faceapi.nets.faceRecognitionNet].map(n=>n.loadFromUri(FV+'/model/')))})().catch(x=>{FL=null;throw x}));
+async function cam(title,html){if(!navigator.mediaDevices)throw{error:'Camera needs http://localhost or HTTPS.'};const st=await navigator.mediaDevices.getUserMedia({video:{width:640,height:480,facingMode:'user'}});
+ const d=document.createElement('div');d.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:50;overflow:auto;padding:16px';
+ d.innerHTML=`<div class="g" style="max-width:700px;margin:auto"><h3>${title}</h3><video autoplay muted playsinline style="width:100%;border-radius:12px;background:#000;transform:scaleX(-1)"></video>${html}</div>`;document.body.appendChild(d);
+ const v=d.querySelector('video');v.srcObject=st;const o={d,v,q:s=>d.querySelector(s),stop(){clearInterval(o.t);o.dead=1;st.getTracks().forEach(t=>t.stop());d.remove()}};return o}
+async function enrol(sid,id){const s=RO.find(x=>x.id===id);try{toast('Loading camera and face models…',8000);await loadFace();
+ const c=await cam('Enrol face – '+e(s.name),'<p class="mu">Ask the student to look straight at the camera in good light.</p><div class="row"><button id="cap">Capture 3 photos</button><button class="s" id="cx">Cancel</button></div>');
+ c.q('#cx').onclick=c.stop;c.q('#cap').onclick=async()=>{const b=c.q('#cap');b.disabled=true;const ds=[];
+  try{for(let i=0;i<3&&!c.dead;i++){let r;for(let k=0;k<8&&!r&&!c.dead;k++){r=await faceapi.detectSingleFace(c.v,FO()).withFaceLandmarks().withFaceDescriptor();if(!r)await wait(400)}
+   if(!r){if(!c.dead){toast('No face found. Try again.');b.disabled=false}return}
+   ds.push(Array.from(r.descriptor,n=>+n.toFixed(4)));toast('Photo '+(i+1)+' of 3 captured');await wait(700)}
+   await api('POST','t/face',{studentId:id,descriptors:ds});toast('✅ Face enrolled: '+s.name);c.stop();openS(sid)}catch(x){ferr(x);b.disabled=false}}}catch(x){ferr(x)}}
+async function scan(sid){try{toast('Loading camera and face models…',8000);await loadFace();const r=await api('GET','t/session/'+sid),F=await api('GET','t/faces/'+r.session.cid);
+ if(!F.length)return toast('No faces enrolled yet. Click Enrol next to each student first.',6000);
+ const stt={},nm={},done=[];r.roster.forEach(x=>{stt[x.id]=x.st;nm[x.id]=x.name});
+ const M=new faceapi.FaceMatcher(F.map(f=>new faceapi.LabeledFaceDescriptors(String(f.id),f.d.map(d=>new Float32Array(d)))),.5);
+ const c=await cam('Face scan – '+e(r.session.className),'<p id="sl" class="mu">Looking for enrolled students…</p><div class="row"><button class="s" id="cx">Done</button></div>');
+ c.q('#cx').onclick=()=>{c.stop();openS(sid)};let seen={},busy=0;
+ c.t=setInterval(async()=>{if(busy||c.dead)return;busy=1;try{const ds=await faceapi.detectAllFaces(c.v,FO()).withFaceLandmarks().withFaceDescriptors(),cur=new Set();
+  for(const d of ds){const m=M.findBestMatch(d.descriptor),id=+m.label;if(!id||stt[id])continue;cur.add(id);seen[id]=(seen[id]||0)+1;if(seen[id]<2)continue;
+   await api('POST','t/mark',{sessionId:sid,studentId:id,status:'PRESENT'});stt[id]='PRESENT';done.push(nm[id]);c.q('#sl').innerHTML='✅ Marked present ('+done.length+'): '+done.map(e).join(', ')}
+  for(const k in seen)if(!cur.has(+k))delete seen[k]}catch(x){if(x&&x.error){fail(x);c.stop();openS(sid);return}}busy=0},800)}catch(x){ferr(x)}}
+/* ---- Student ---- */
+VIEWS['My attendance']=async()=>{const r=await api('GET','s/report');$('#main').innerHTML=`<div class="g"><h3>My attendance</h3>${rep(r)}</div>`};
+boot();
+</script></body></html>
