@@ -21,6 +21,8 @@ const b64=o=>Buffer.from(JSON.stringify(o)).toString('base64url');
 const sig=s=>crypto.createHmac('sha256',SECRET).update(s).digest('base64url');
 const sign=id=>{const s=b64({alg:'HS256'})+'.'+b64({sub:id,exp:Date.now()+12*36e5});return s+'.'+sig(s)};
 const verify=t=>{try{const[h,p,s]=String(t).split('.'),m=sig(h+'.'+p);if(!s||s.length!==m.length||!crypto.timingSafeEqual(Buffer.from(s),Buffer.from(m)))return;const o=JSON.parse(Buffer.from(p,'base64url'));return o.exp>Date.now()?+o.sub:undefined}catch{}};
+const signKiosk=()=>{const x=b64({alg:'HS256'})+'.'+b64({kiosk:1,exp:Date.now()+12*36e5});return x+'.'+sig(x)};
+const verifyKiosk=t=>{try{const[h,p,z]=String(t).split('.'),m=sig(h+'.'+p);if(!z||z.length!==m.length||!crypto.timingSafeEqual(Buffer.from(z),Buffer.from(m)))return false;const o=JSON.parse(Buffer.from(p,'base64url'));return !!(o.kiosk&&o.exp>Date.now())}catch{return false}};
 const hpw=(pw,salt)=>crypto.scryptSync(pw,salt,64).toString('hex');
 const bad=(c,m,x)=>{throw{c,m,x}};
 const r1=x=>Math.round(x*10)/10;
@@ -74,6 +76,46 @@ async function route(req,p,b){
     return{token:sign(u.id),user:strip(u)}
   }
 
+  // Dedicated classroom kiosk: separate from teacher/student accounts.
+  if(p==='/api/kiosk/login'&&M==='POST'){
+    const expected=String(E.KIOSK_PIN||'2468');
+    if(String(b.pin||'')!==expected)bad(401,'Incorrect scanner PIN.');
+    return{token:signKiosk()};
+  }
+  if(p.startsWith('/api/kiosk/')){
+    if(!verifyKiosk((req.headers.authorization||'').slice(7)))bad(401,'Scanner authorization required.');
+    const parts=p.split('/'),a=parts[3],c=parts[4];
+    if(a==='tt'&&M==='GET'){
+      const {rows}=await q(`SELECT t.id,t.class_id AS cid,t.teacher_id AS tid,t.subject,t.day,t.period,
+        to_char(t.start_time,'HH24:MI') AS start,to_char(t.end_time,'HH24:MI') AS "end",
+        c.name AS "className",u.name AS "teacherName" FROM timetable t
+        JOIN classes c ON c.id=t.class_id JOIN users u ON u.id=t.teacher_id ORDER BY t.day,t.period,c.name`);
+      return rows.map(x=>({...x,id:+x.id,cid:+x.cid,tid:+x.tid}));
+    }
+    if(a==='session'&&M==='POST'){
+      const tt=await one(`SELECT id,class_id AS cid,teacher_id AS tid,period FROM timetable WHERE id=$1`,[parseInt(b.timetableId,10)]);
+      const date=String(b.date||''); if(!tt||!/^\\d{4}-\\d{2}-\\d{2}$/.test(date))bad(400,'Choose a valid scheduled class and date.');
+      let x=await one(`SELECT id,closed FROM attendance_sessions WHERE class_id=$1 AND attendance_date=$2 AND period=$3`,[tt.cid,date,tt.period]);
+      if(!x)x=await one(`INSERT INTO attendance_sessions(class_id,teacher_id,attendance_date,period,closed) VALUES($1,$2,$3,$4,false) RETURNING id,closed`,[tt.cid,tt.tid,date,tt.period]);
+      return{id:+x.id,closed:x.closed};
+    }
+    if(a==='session'&&M==='GET'){
+      const ss=await one(`SELECT s.id,s.class_id AS cid,s.teacher_id AS tid,s.attendance_date::text AS date,s.period,s.closed,c.name AS "className" FROM attendance_sessions s JOIN classes c ON c.id=s.class_id WHERE s.id=$1`,[+c]);
+      if(!ss)bad(404,'Session not found.'); ss.id=+ss.id;ss.cid=+ss.cid;ss.tid=+ss.tid;ss.date=String(ss.date).slice(0,10);
+      const {rows:ms}=await q('SELECT student_id AS stu,status AS st FROM attendance_marks WHERE session_id=$1',[ss.id]);
+      return{session:ss,roster:(await roster(ss.cid)).map(r=>({...r,st:(ms.find(x=>+x.stu===r.id)||{}).st})),summary:await summary(ss)};
+    }
+    if(a==='faces'&&M==='GET'){
+      const rs=(await roster(+c)).filter(r=>r.face),out=[];for(const r of rs){const {rows}=await q('SELECT descriptor FROM face_descriptors WHERE student_id=$1 ORDER BY id',[r.id]);out.push({id:r.id,name:r.name,d:rows.map(x=>x.descriptor)})}return out;
+    }
+    if(a==='mark'&&M==='POST'){
+      const ss=await one(`SELECT id,class_id AS cid,closed FROM attendance_sessions WHERE id=$1`,[parseInt(b.sessionId,10)]);if(!ss)bad(404,'Session not found.');if(ss.closed)bad(409,'Session is closed.');
+      const stu=parseInt(b.studentId,10);if(!(await roster(+ss.cid)).some(r=>r.id===stu))bad(403,'Student is not in this class.');
+      await q(`INSERT INTO attendance_marks(session_id,student_id,status) VALUES($1,$2,'PRESENT') ON CONFLICT(session_id,student_id) DO NOTHING`,[ss.id,stu]);return{ok:1};
+    }
+    bad(404,'Scanner endpoint not found.');
+  }
+
   const id=verify((req.headers.authorization||'').slice(7));
   const u=id&&await one('SELECT * FROM users WHERE id=$1',[id]);
   if(!u)bad(401,'Please sign in again.');
@@ -92,7 +134,17 @@ async function route(req,p,b){
 
   if(p==='/api/ai'&&M==='POST'){
     const question=String(b.question||'').trim().slice(0,2000); if(!question)bad(400,'Ask a question.');
-    const context=`You are FaceAttend AI, a concise assistant embedded in a college face-attendance application. User role: ${u.role}. Help with FaceAttend usage, attendance concepts, and general questions. Never reveal secrets, API keys, face descriptors, password hashes, or other users' private data. For app help, explain the relevant role workflow clearly.`;
+    let appContext={user:{name:u.name,role:u.role},today:new Date().toISOString().slice(0,10)};
+    if(u.role==='teacher'){
+      const {rows:tt}=await q(`SELECT t.subject,t.day,t.period,to_char(t.start_time,'HH24:MI') AS start,to_char(t.end_time,'HH24:MI') AS "end",c.name AS class FROM timetable t JOIN classes c ON c.id=t.class_id WHERE t.teacher_id=$1 ORDER BY t.day,t.period`,[u.id]);
+      const {rows:ss}=await q(`SELECT s.id,s.attendance_date::text AS date,s.period,c.name AS class,s.closed FROM attendance_sessions s JOIN classes c ON c.id=s.class_id WHERE s.teacher_id=$1 ORDER BY s.attendance_date DESC,s.period DESC LIMIT 30`,[u.id]);
+      const {rows:classes}=await q(`SELECT c.id,c.name,c.semester,(SELECT count(*)::int FROM users st WHERE st.role='student' AND st.class_id=c.id) AS students FROM teacher_assignments ta JOIN classes c ON c.id=ta.class_id WHERE ta.teacher_id=$1 ORDER BY c.name`,[u.id]);
+      appContext.timetable=tt;appContext.recentSessions=ss.map(x=>({...x,date:String(x.date).slice(0,10)}));appContext.assignedClasses=classes;
+    } else if(u.role==='student') appContext.attendance=await report(u.id);
+    else if(u.role==='admin'){
+      const counts=await one(`SELECT (SELECT count(*) FROM departments)::int departments,(SELECT count(*) FROM classes)::int classes,(SELECT count(*) FROM users WHERE role='teacher')::int teachers,(SELECT count(*) FROM users WHERE role='student')::int students,(SELECT count(*) FROM attendance_sessions)::int sessions`);appContext.systemCounts=counts;
+    }
+    const context=`You are FaceAttend AI inside a college face-attendance application. Answer using LIVE APP CONTEXT when the question is about this user's timetable, classes, attendance, sessions or system. Today is ${appContext.today}. Weekly timetable day uses 1=Monday through 6=Saturday. If a requested fact is not in the context, say that clearly; do not invent it. User role: ${u.role}. Never reveal secrets, API keys, biometric face descriptors, password hashes, or private data belonging to unrelated users. Keep answers concise and useful. LIVE APP CONTEXT: ${JSON.stringify(appContext)}`;
     try{
       if(E.OPENAI_API_KEY){
         const rr=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+E.OPENAI_API_KEY},body:JSON.stringify({model:E.OPENAI_MODEL||'gpt-6-luna',instructions:context,input:question,max_output_tokens:500})});
