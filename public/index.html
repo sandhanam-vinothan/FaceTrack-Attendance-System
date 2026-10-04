@@ -72,25 +72,53 @@ async function openS(id){try{const r=await api('GET','t/session/'+id),s=r.sessio
 async function mark(sid,stu,st,cur){if(cur===st)return;let reason;if(cur){reason=prompt('Reason for correcting '+cur+' → '+st+'?');if(!reason)return}
  try{await api('POST','t/mark',{sessionId:sid,studentId:stu,status:st,reason});openS(sid)}catch(x){fail(x)}}
 async function closeS(id){if(!confirm('Close this session? Attendance can no longer be changed.'))return;try{await api('POST','t/close/'+id);await VIEWS.Attendance();openS(id)}catch(x){fail(x)}}
-/* ---- Classroom wall scanner ---- */
-VIEWS['Classroom Scanner']=async()=>{const ss=await api('GET','t/sessions'),open=ss.filter(x=>!x.closed);
- $('#main').innerHTML=`<div class="g"><h3>📷 Classroom Wall Scanner</h3><p class="mu">Mount this device near the classroom entrance. Start the correct attendance session first, then launch the scanner. Recognized enrolled students are marked PRESENT automatically.</p>${open.length?tbl(['Class','Date','Period','Status',''],open.map(x=>[e(x.className),x.date,x.period,'Open',`<button onclick="wallScan(${x.id})">Launch scanner</button>`])):`<p class="mu">No open attendance session. Create one from Attendance first.</p>`}</div>`};
-async function wallScan(sid){try{toast('Loading camera and face models…',8000);await loadFace();const r=await api('GET','t/session/'+sid),F=await api('GET','t/faces/'+r.session.cid);
- if(!F.length)return toast('No faces enrolled for this class yet. Enrol students from Attendance first.',6000);
- const stt={},nm={},done=[];r.roster.forEach(x=>{stt[x.id]=x.st;nm[x.id]=x.name});
+/* ---- Timetable-controlled classroom wall scanner ---- */
+let WALL_TIMER=null,WALL_RUNNING=false,WALL_SID=null;
+const mins=t=>{const a=String(t||'').slice(0,5).split(':').map(Number);return (a[0]||0)*60+(a[1]||0)};
+const jsDayToTT=d=>d===0?7:d; // timetable: Mon=1 ... Sun=7
+async function activePeriod(){
+ const tt=await api('GET','t/tt'),now=new Date(),day=jsDayToTT(now.getDay()),m=now.getHours()*60+now.getMinutes();
+ return tt.find(x=>+x.day===day&&m>=mins(x.start)&&m<mins(x.end))||null;
+}
+async function ensurePeriodSession(x){
+ const ss=await api('GET','t/sessions'),date=today();
+ let s=ss.find(q=>String(q.date).slice(0,10)===date&&+q.period===+x.period&&+q.cid===+x.cid);
+ if(!s){s=await api('POST','t/session',{classId:x.cid,date,period:x.period})}
+ return s;
+}
+async function refreshWall(autoStart=true){
+ try{
+  const x=await activePeriod(),box=$('#wallbox');if(!box)return;
+  if(!x){box.innerHTML=`<div style="text-align:center;padding:28px"><div style="font-size:42px">🔒</div><h2>Scanner locked</h2><p class="mu">There is no timetable period allocated at the current time.</p><p class="mu">The scanner checks the timetable automatically every 15 seconds.</p></div>`;return}
+  const ss=await api('GET','t/sessions'),date=today(),existing=ss.find(q=>String(q.date).slice(0,10)===date&&+q.period===+x.period&&+q.cid===+x.cid);
+  box.innerHTML=`<div style="text-align:center;padding:20px"><div style="font-size:13px;font-weight:800;color:var(--a)">🟢 ATTENDANCE PERIOD ACTIVE</div><h2 style="margin:8px 0">${e(x.subject)}</h2><div>${e(x.className)} · Period ${x.period}</div><div class="mu">${x.start}–${x.end}</div><p class="mu">${existing&&existing.closed?'This period attendance is already closed.':'Camera will run only during this allocated timetable period.'}</p>${existing&&existing.closed?'':`<button onclick="startAllocatedScanner()">📷 Start classroom camera</button>`}</div>`;
+  if(autoStart&&!WALL_RUNNING&&!(existing&&existing.closed))startAllocatedScanner();
+ }catch(x){fail(x)}
+}
+VIEWS['Classroom Scanner']=async()=>{
+ if(WALL_TIMER){clearInterval(WALL_TIMER);WALL_TIMER=null}WALL_RUNNING=false;WALL_SID=null;
+ $('#main').innerHTML=`<div class="g"><h3>📷 Automatic Classroom Scanner</h3><p class="mu">This scanner follows the teacher timetable. Outside the allocated period it stays locked. During the period it opens the matching attendance session and starts face attendance.</p><div id="wallbox"><p class="mu">Checking timetable…</p></div></div>`;
+ await refreshWall(true);WALL_TIMER=setInterval(()=>refreshWall(false),15000)
+};
+async function startAllocatedScanner(){
+ if(WALL_RUNNING)return;
+ try{const x=await activePeriod();if(!x)return refreshWall(false);const s=await ensurePeriodSession(x);if(s.closed)return refreshWall(false);WALL_RUNNING=true;WALL_SID=s.id;await wallScan(s.id,x)}catch(z){WALL_RUNNING=false;WALL_SID=null;fail(z)}
+}
+async function wallScan(sid,slot){try{toast('Loading camera and face models…',8000);await loadFace();const r=await api('GET','t/session/'+sid),F=await api('GET','t/faces/'+r.session.cid);
+ if(!F.length){WALL_RUNNING=false;return toast('No faces enrolled for this class yet. Enrol students from Attendance first.',6000)}
+ const stt={},nm={};r.roster.forEach(x=>{stt[x.id]=x.st;nm[x.id]=x.name});
  const M=new faceapi.FaceMatcher(F.map(f=>new faceapi.LabeledFaceDescriptors(String(f.id),f.d.map(d=>new Float32Array(d)))),.5);
- const c=await cam('CLASSROOM SCANNER — '+e(r.session.className),`<div style="text-align:center"><div style="font-size:18px;font-weight:700">Period ${r.session.period}</div><div id="clock" class="mu" style="font-size:16px;margin:4px 0 12px"></div><div id="wallmsg" style="font-size:26px;font-weight:800;color:var(--a);min-height:42px">Show face to camera</div><p id="wallsub" class="mu">Looking for enrolled students…</p><div class="tiles"><div><b id="wallcount">${Object.values(stt).filter(x=>x==='PRESENT').length}</b>Present</div><div><b>${r.roster.length}</b>Students</div></div><div class="row"><button class="s" id="cx">Stop scanner</button></div></div>`);
- const clock=()=>{const q=c.q('#clock');if(q)q.textContent=new Date().toLocaleString()};clock();const ci=setInterval(clock,1000);const oldStop=c.stop;c.stop=()=>{clearInterval(ci);oldStop()};
- c.q('#cx').onclick=()=>{c.stop();VIEWS['Classroom Scanner']()};let seen={},busy=0,last='';
- c.t=setInterval(async()=>{if(busy||c.dead)return;busy=1;try{const ds=await faceapi.detectAllFaces(c.v,FO()).withFaceLandmarks().withFaceDescriptors(),cur=new Set();
-  if(!ds.length){c.q('#wallsub').textContent='Waiting for a face…'}
-  for(const d of ds){const m=M.findBestMatch(d.descriptor);if(m.label==='unknown')continue;const id=+m.label;if(!id)continue;cur.add(id);seen[id]=(seen[id]||0)+1;if(seen[id]<2)continue;
-   if(stt[id]){if(last!==id){c.q('#wallmsg').textContent='Already recorded — '+nm[id];c.q('#wallsub').textContent=stt[id];last=id}continue}
-   await api('POST','t/mark',{sessionId:sid,studentId:id,status:'PRESENT'});stt[id]='PRESENT';done.push(nm[id]);last=id;c.q('#wallmsg').textContent='✓ '+nm[id];c.q('#wallsub').textContent='ATTENDANCE RECORDED';c.q('#wallcount').textContent=Object.values(stt).filter(x=>x==='PRESENT').length;
-  }
-  for(const k in seen)if(!cur.has(+k))delete seen[k]
- }catch(x){if(x&&x.error){fail(x);c.stop();return}}busy=0},800)
- }catch(x){ferr(x)}}
+ const c=await cam('CLASSROOM SCANNER — '+e(r.session.className),`<div style="text-align:center"><div style="font-size:13px;font-weight:800;color:var(--a)">🟢 ${e(slot.subject)}</div><div style="font-size:18px;font-weight:700">Period ${r.session.period} · ${slot.start}–${slot.end}</div><div id="clock" class="mu" style="font-size:16px;margin:4px 0 12px"></div><div id="wallmsg" style="font-size:26px;font-weight:800;color:var(--a);min-height:42px">Show face to camera</div><p id="wallsub" class="mu">Looking for enrolled students…</p><div class="tiles"><div><b id="wallcount">${Object.values(stt).filter(x=>x==='PRESENT').length}</b>Present</div><div><b>${r.roster.length}</b>Students</div></div><p class="mu">Scanner closes automatically when this timetable period ends.</p><div class="row"><button class="s" id="cx">Stop camera</button></div></div>`);
+ const clock=()=>{const q=c.q('#clock');if(q)q.textContent=new Date().toLocaleString()};clock();const ci=setInterval(clock,1000);const oldStop=c.stop;c.stop=()=>{clearInterval(ci);WALL_RUNNING=false;WALL_SID=null;oldStop()};
+ c.q('#cx').onclick=()=>{c.stop();refreshWall(false)};let seen={},busy=0,last='';
+ c.t=setInterval(async()=>{if(busy||c.dead)return;const a=await activePeriod().catch(()=>null);if(!a||+a.period!==+slot.period||+a.cid!==+slot.cid){c.q('#wallmsg').textContent='Period ended — scanner locked';c.q('#wallsub').textContent='Attendance window is closed.';await wait(1200);c.stop();refreshWall(false);return}
+  busy=1;try{const ds=await faceapi.detectAllFaces(c.v,FO()).withFaceLandmarks().withFaceDescriptors(),cur=new Set();if(!ds.length)c.q('#wallsub').textContent='Waiting for a face…';
+   for(const d of ds){const m=M.findBestMatch(d.descriptor);if(m.label==='unknown')continue;const id=+m.label;if(!id)continue;cur.add(id);seen[id]=(seen[id]||0)+1;if(seen[id]<2)continue;
+    if(stt[id]){if(last!==id){c.q('#wallmsg').textContent='Already recorded — '+nm[id];c.q('#wallsub').textContent=stt[id];last=id}continue}
+    await api('POST','t/mark',{sessionId:sid,studentId:id,status:'PRESENT'});stt[id]='PRESENT';last=id;c.q('#wallmsg').textContent='✓ '+nm[id];c.q('#wallsub').textContent='ATTENDANCE RECORDED';c.q('#wallcount').textContent=Object.values(stt).filter(x=>x==='PRESENT').length}
+   for(const k in seen)if(!cur.has(+k))delete seen[k]
+  }catch(z){if(z&&z.error){fail(z);c.stop();return}}busy=0},800)
+ }catch(x){WALL_RUNNING=false;WALL_SID=null;ferr(x)}}
 
 /* ---- Face scan ---- */
 const FV='https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12',FO=()=>new faceapi.TinyFaceDetectorOptions({inputSize:320,scoreThreshold:.5});let FL;
