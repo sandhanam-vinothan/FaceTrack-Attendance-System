@@ -90,6 +90,23 @@ async function route(req,p,b){
   }
   if(u.must_change_password)bad(403,'Password change required.',{must:1});
 
+  if(p==='/api/ai'&&M==='POST'){
+    const question=String(b.question||'').trim().slice(0,2000); if(!question)bad(400,'Ask a question.');
+    const context=`You are FaceAttend AI, a concise assistant embedded in a college face-attendance application. User role: ${u.role}. Help with FaceAttend usage, attendance concepts, and general questions. Never reveal secrets, API keys, face descriptors, password hashes, or other users' private data. For app help, explain the relevant role workflow clearly.`;
+    try{
+      if(E.OPENAI_API_KEY){
+        const rr=await fetch('https://api.openai.com/v1/responses',{method:'POST',headers:{'content-type':'application/json','authorization':'Bearer '+E.OPENAI_API_KEY},body:JSON.stringify({model:E.OPENAI_MODEL||'gpt-6-luna',instructions:context,input:question,max_output_tokens:500})});
+        const j=await rr.json(); if(!rr.ok)bad(502,j.error?.message||'AI service error.');
+        return{answer:j.output_text||j.output?.flatMap(x=>x.content||[]).map(x=>x.text||'').join('')||'No response.'};
+      }
+      if(E.OLLAMA_BASE_URL){
+        const rr=await fetch(E.OLLAMA_BASE_URL.replace(/\/$/,'')+'/api/chat',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({model:E.OLLAMA_MODEL||'llama3.2',stream:false,messages:[{role:'system',content:context},{role:'user',content:question}]})});
+        const j=await rr.json(); if(!rr.ok)bad(502,j.error||'Ollama service error.'); return{answer:j.message?.content||'No response.'};
+      }
+      bad(503,'AI is not configured. Add OPENAI_API_KEY on Render, or set OLLAMA_BASE_URL for a reachable Ollama server.');
+    }catch(x){if(x&&x.c)throw x;bad(502,'AI service is temporarily unavailable.')}
+  }
+
   const[,,area,a,c]=p.split('/'),need=r=>{if(u.role!==r)bad(403,'Forbidden')};
 
   if(area==='admin'){
@@ -105,6 +122,19 @@ async function route(req,p,b){
            to_char(start_time,'HH24:MI') AS start,to_char(end_time,'HH24:MI') AS "end" FROM timetable ORDER BY id`)
       ]);
       return{depts:depts.rows,classes:classes.rows,teachers:teachers.rows.map(strip),students:students.rows.map(strip),assigns:assigns.rows,tt:tt.rows};
+    }
+    if(a==='delete'&&M==='POST'){
+      const type=String(b.type||''),id=parseInt(b.id,10); if(!id)bad(400,'Invalid item.');
+      if(type==='department')await q('DELETE FROM departments WHERE id=$1',[id]);
+      else if(type==='class')await q('DELETE FROM classes WHERE id=$1',[id]);
+      else if(type==='teacher')await q("DELETE FROM users WHERE id=$1 AND role='teacher'",[id]);
+      else if(type==='student')await q("DELETE FROM users WHERE id=$1 AND role='student'",[id]);
+      else if(type==='timetable')await q('DELETE FROM timetable WHERE id=$1',[id]);
+      else if(type==='assignment')await q('DELETE FROM teacher_assignments WHERE teacher_id=$1 AND class_id=$2',[parseInt(b.teacherId,10),parseInt(b.classId,10)]);
+      else bad(400,'Unsupported item.'); return{ok:1};
+    }
+    if(a==='clear-attendance'&&M==='POST'){
+      await q('DELETE FROM attendance_sessions'); return{ok:1};
     }
     if(M!=='POST')bad(404,'Not found');
     const s=k=>String(b[k]||'').trim(),n=k=>parseInt(b[k],10);
@@ -197,6 +227,7 @@ async function route(req,p,b){
       return{ok:1};
     }
     if(a==='close'&&M==='POST'){const s=await own(+c);await q('UPDATE attendance_sessions SET closed=true WHERE id=$1',[s.id]);return{ok:1}}
+    if(a==='delete-session'&&M==='POST'){const s=await own(+c);await q('DELETE FROM attendance_sessions WHERE id=$1',[s.id]);return{ok:1}}
     if(a==='student'){const stu=await one("SELECT id,name,class_id FROM users WHERE id=$1 AND role='student'",[+c]);if(!stu)bad(404,'Student not found.');await mine(+stu.class_id);return{name:stu.name,...await report(+stu.id)}}
   }
 
