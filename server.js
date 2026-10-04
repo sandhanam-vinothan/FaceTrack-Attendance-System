@@ -88,8 +88,8 @@ async function route(req,p,b){
     if(a==='tt'&&M==='GET'){
       const {rows}=await q(`SELECT t.id,t.class_id AS cid,t.teacher_id AS tid,t.subject,t.day,t.period,
         to_char(t.start_time,'HH24:MI') AS start,to_char(t.end_time,'HH24:MI') AS "end",
-        c.name AS "className",u.name AS "teacherName" FROM timetable t
-        JOIN classes c ON c.id=t.class_id JOIN users u ON u.id=t.teacher_id ORDER BY t.day,t.period,c.name`);
+        c.name AS "className",c.semester,d.id AS "deptId",d.name AS "deptName",u.name AS "teacherName" FROM timetable t
+        JOIN classes c ON c.id=t.class_id JOIN departments d ON d.id=c.dept_id JOIN users u ON u.id=t.teacher_id ORDER BY d.name,c.name,t.day,t.period`);
       return rows.map(x=>({...x,id:+x.id,cid:+x.cid,tid:+x.tid}));
     }
     if(a==='session'&&M==='POST'){
