@@ -290,11 +290,67 @@ async function route(req,p,b){
 const body=req=>new Promise(ok=>{let b='';req.on('data',c=>{b+=c;if(b.length>1e5)req.destroy()});req.on('end',()=>{try{ok(b?JSON.parse(b):{})}catch{ok({})}})});
 const server=http.createServer(async(req,res)=>{
   res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('X-Frame-Options','DENY');
-  const p=new URL(req.url,'http://x').pathname;
-  if(!p.startsWith('/api/')){
-    if(p==='/'||p==='/index.html'){res.writeHead(200,{'content-type':'text/html; charset=utf-8','cache-control':'no-cache'});return fs.createReadStream(path.join(__dirname,'public','index.html')).pipe(res)}
-    res.writeHead(404);return res.end('Not found')
+ const p = new URL(req.url, 'http://x').pathname;
+
+if (!p.startsWith('/api/')) {
+  const publicDir = path.join(__dirname, 'public');
+
+  // Homepage
+  if (p === '/' || p === '/index.html') {
+    res.writeHead(200, {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-cache'
+    });
+
+    return fs.createReadStream(
+      path.join(publicDir, 'index.html')
+    ).pipe(res);
   }
+
+  // Static files: images, CSS, JS, etc.
+  const safePath = path
+    .normalize(decodeURIComponent(p))
+    .replace(/^(\.\.[/\\])+/, '')
+    .replace(/^[/\\]+/, '');
+
+  const filePath = path.join(publicDir, safePath);
+
+  // Prevent access outside /public
+  if (
+    filePath !== publicDir &&
+    !filePath.startsWith(publicDir + path.sep)
+  ) {
+    res.writeHead(403);
+    return res.end('Forbidden');
+  }
+
+  if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+
+    const ext = path.extname(filePath).toLowerCase();
+
+    const types = {
+      '.png': 'image/png',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.webp': 'image/webp',
+      '.svg': 'image/svg+xml',
+      '.css': 'text/css; charset=utf-8',
+      '.js': 'application/javascript; charset=utf-8',
+      '.json': 'application/json; charset=utf-8',
+      '.ico': 'image/x-icon'
+    };
+
+    res.writeHead(200, {
+      'content-type': types[ext] || 'application/octet-stream',
+      'cache-control': 'public, max-age=3600'
+    });
+
+    return fs.createReadStream(filePath).pipe(res);
+  }
+
+  res.writeHead(404);
+  return res.end('Not found');
+}
   const send=(c,o)=>{res.writeHead(c,{'content-type':'application/json','cache-control':'no-store'});res.end(JSON.stringify(o))};
   try{send(200,await route(req,p,await body(req)))}catch(x){if(x&&x.c)send(x.c,{error:x.m,...x.x});else{console.error(x);send(500,{error:'Server error'})}}
 });
